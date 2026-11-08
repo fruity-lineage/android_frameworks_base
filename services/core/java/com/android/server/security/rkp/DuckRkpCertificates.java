@@ -66,6 +66,27 @@ final class DuckRkpCertificates {
             }
         }
         if (chosen == null) throw new IllegalArgumentException("No certificate matches the key");
+        return keybox(key, chosen);
+    }
+
+    static Result fromDerChain(KeyPair key, byte[] encoded) throws Exception {
+        if (encoded == null || encoded.length > DuckRkpCbor.LIMIT) {
+            throw new IllegalArgumentException("Certificate chain too large");
+        }
+        List<X509Certificate> certificates = parse(encoded);
+        X509Certificate leaf = null;
+        for (X509Certificate certificate : certificates) {
+            if (Arrays.equals(certificate.getPublicKey().getEncoded(),
+                    key.getPublic().getEncoded())) {
+                if (leaf != null) throw new IllegalArgumentException("Ambiguous key match");
+                leaf = certificate;
+            }
+        }
+        if (leaf == null) throw new IllegalArgumentException("No certificate matches the key");
+        return keybox(key, order(certificates, leaf));
+    }
+
+    private static Result keybox(KeyPair key, List<X509Certificate> chosen) throws Exception {
         long expiresAt = validate(chosen);
         StringBuilder xml = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
                 .append("<AndroidAttestation><NumberOfKeyboxes>1</NumberOfKeyboxes>")

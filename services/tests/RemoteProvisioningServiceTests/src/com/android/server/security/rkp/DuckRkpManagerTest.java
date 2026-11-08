@@ -12,6 +12,14 @@ import java.util.concurrent.TimeUnit;
 
 public class DuckRkpManagerTest {
     @Test
+    public void trustyImportRequiresSelectionAndServices() {
+        assertThat(DuckRkpManager.supportsBackend("Google", true, false, true)).isFalse();
+        assertThat(DuckRkpManager.supportsBackend("Google", true, true, false)).isFalse();
+        assertThat(DuckRkpManager.supportsBackend("Google", false, true, true)).isTrue();
+        assertThat(DuckRkpManager.supportsBackend("Qualcomm", true, true, false)).isFalse();
+    }
+
+    @Test
     public void unsupportedHardwareCannotUseDeclaredBackend() {
         for (String manufacturer : new String[] {"Google", "Samsung", "", null}) {
             assertThat(DuckRkpManager.supportsBackend(manufacturer, true)).isFalse();

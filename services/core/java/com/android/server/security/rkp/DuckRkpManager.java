@@ -242,8 +242,9 @@ public final class DuckRkpManager {
 
     private void runProvisioning(long generation, Runnable timeout) {
         try {
-            DuckRkpCertificates.Result result = DuckRkpV1.provision(
-                    stage -> progress(generation, stage));
+            DuckRkpV1.Progress reporter = stage -> progress(generation, stage);
+            DuckRkpCertificates.Result result = DuckRkpTrusty.enabled()
+                    ? DuckRkpTrusty.provision(reporter) : DuckRkpV1.provision(reporter);
             synchronized (this) {
                 progress(generation, "saving");
                 Validity validity = validateGenerated(result.xml);
@@ -514,11 +515,20 @@ public final class DuckRkpManager {
     }
 
     private static boolean backendAvailable() {
+        if (DuckRkpTrusty.enabled()) {
+            return supportsBackend(Build.SOC_MANUFACTURER, false, true, DuckRkpTrusty.available());
+        }
         return supportsBackend(Build.SOC_MANUFACTURER,
                 ServiceManager.isDeclared(DuckRkpV1.SERVICE) || DuckRkpNative.available());
     }
 
     static boolean supportsBackend(String manufacturer, boolean declared) {
+        return supportsBackend(manufacturer, declared, false, false);
+    }
+
+    static boolean supportsBackend(String manufacturer, boolean declared,
+            boolean trustyImport, boolean importAvailable) {
+        if (trustyImport) return importAvailable;
         // The current signing protocols require Qualcomm firmware, even if a service is declared.
         return declared && ("Qualcomm".equalsIgnoreCase(manufacturer)
                 || "QTI".equalsIgnoreCase(manufacturer)
