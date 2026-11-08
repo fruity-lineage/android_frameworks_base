@@ -496,6 +496,8 @@ import com.android.internal.util.NamedLock;
 import com.android.internal.util.Preconditions;
 import com.android.internal.util.function.pooled.PooledLambda;
 import com.android.server.AlarmManagerInternal;
+import com.android.server.AxExtServiceFactory;
+import com.android.server.wm.sandbox.spoof.SettingsSpoofService;
 import com.android.server.BootReceiver;
 import com.android.server.DeviceIdleInternal;
 import com.android.server.DisplayThread;
@@ -9894,6 +9896,8 @@ public class ActivityManagerService extends IActivityManager.Stub
             mComponentAliasResolver.onSystemReady(mConstants.mEnableComponentAlias,
                     mConstants.mComponentAliasOverrides);
             t.traceEnd(); // componentAlias
+
+            AxExtServiceFactory.systemReady();
 
             t.traceEnd(); // PhaseActivityManagerReady
         }
@@ -20945,6 +20949,173 @@ public class ActivityManagerService extends IActivityManager.Stub
     @NonNull
     Freezer getFreezer() {
         return mFreezer;
+    }
+
+    @Override
+    public String getSpoofPifConfig() {
+        return AxExtServiceFactory.getSpoofManager().getPifConfig();
+    }
+
+    @Override
+    public String getSpoofGamePropsConfig() {
+        return AxExtServiceFactory.getSpoofManager().getGamePropsConfig();
+    }
+
+    @Override
+    public String getSpoofTrickyStoreTarget() {
+        return AxExtServiceFactory.getSpoofManager().getTrickyStoreTarget();
+    }
+
+    @Override
+    public String getSpoofTrickyStoreKeyBox() {
+        return AxExtServiceFactory.getSpoofManager().getTrickyStoreKeyBox();
+    }
+
+    @Override
+    public String getSpoofTrickyStorePatch() {
+        return AxExtServiceFactory.getSpoofManager().getTrickyStorePatch();
+    }
+
+    @Override
+    public Bundle getSpoofBootState() {
+        // Only public RootOfTrust digests cross this interface. Keep persistence and
+        // hardware probing in system_server, where /data/system is accessible.
+        Bundle state = new Bundle();
+        if (!mSystemReady) return state;
+        long token = Binder.clearCallingIdentity();
+        try {
+            state.putByteArray("boot_key", android.security.trickystore.AttestationUtils.getBootKey());
+            state.putByteArray("boot_hash", android.security.trickystore.AttestationUtils.getBootHash());
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
+        return state;
+    }
+
+    private void enforceDuckRkpPermission() {
+        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS,
+                "Device RKP requires WRITE_SECURE_SETTINGS");
+        if (UserHandle.getUserId(Binder.getCallingUid()) != UserHandle.USER_SYSTEM) {
+            throw new SecurityException("Device RKP is managed by the system user");
+        }
+    }
+
+    private int enforceSettingsSpoofPermission(int userId) {
+        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS,
+                "Settings spoofing requires WRITE_SECURE_SETTINGS");
+        return mUserController.handleIncomingUser(Binder.getCallingPid(), Binder.getCallingUid(),
+                userId, false, ALLOW_FULL_ONLY, "Settings spoofing", null);
+    }
+
+    @Override
+    public boolean isSandboxSpoofSettingEnabled(String packageName, String settingKey, int userId) {
+        int resolvedUser = enforceSettingsSpoofPermission(userId);
+        SettingsSpoofService service = AxExtServiceFactory.getSettingsSpoofService();
+        return service != null && service.isSpoofSettingEnabled(packageName, settingKey, resolvedUser);
+    }
+
+    @Override
+    public void setSandboxSpoofSettingEnabled(String packageName, String settingKey,
+            boolean enabled, int userId) {
+        int resolvedUser = enforceSettingsSpoofPermission(userId);
+        if (TextUtils.isEmpty(packageName) || packageName.indexOf(':') >= 0
+                || SettingsSpoofService.getStaticSpoofedValue(settingKey) == null) {
+            throw new IllegalArgumentException("Invalid package or unsupported setting");
+        }
+        long token = Binder.clearCallingIdentity();
+        try {
+            SettingsSpoofService service = AxExtServiceFactory.getSettingsSpoofService();
+            if (service == null) throw new IllegalStateException("Settings spoofing is not ready");
+            service.setSpoofSettingEnabled(packageName, settingKey, enabled, resolvedUser);
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
+    }
+
+    @Override
+    public List<String> getSandboxEnabledSpoofSettings(String packageName, int userId) {
+        int resolvedUser = enforceSettingsSpoofPermission(userId);
+        SettingsSpoofService service = AxExtServiceFactory.getSettingsSpoofService();
+        return service != null ? service.getEnabledSpoofSettings(packageName, resolvedUser)
+                : Collections.emptyList();
+    }
+
+    @Override
+    public void resetSandboxSpoofSettings(int userId) {
+        int resolvedUser = enforceSettingsSpoofPermission(userId);
+        long token = Binder.clearCallingIdentity();
+        try {
+            SettingsSpoofService service = AxExtServiceFactory.getSettingsSpoofService();
+            if (service == null) throw new IllegalStateException("Settings spoofing is not ready");
+            // Persist first, then discard each app's Settings cache outside repository locks.
+            for (String packageName : service.resetSpoofSettings(resolvedUser)) {
+                forceStopPackage(packageName, resolvedUser);
+            }
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
+    }
+
+    @Override
+    public String getSandboxSpoofedSetting(String callingPackage, String settingName, int userId) {
+        // SettingsProvider validates its calling package before forwarding the read.
+        // Direct app callers can only inspect their own package and user.
+        int callingUid = Binder.getCallingUid();
+        if (callingUid != Process.SYSTEM_UID && callingUid != Process.ROOT_UID) {
+            if (userId != UserHandle.getUserId(callingUid)) {
+                throw new SecurityException("Settings spoof reads are limited to the calling user");
+            }
+            if (mAppOpsService.checkPackage(callingUid, callingPackage) != AppOpsManager.MODE_ALLOWED) {
+                throw new SecurityException("Settings spoof reads are limited to the calling package");
+            }
+        }
+        if (userId < 0) throw new IllegalArgumentException("A concrete user is required");
+        SettingsSpoofService service = AxExtServiceFactory.getSettingsSpoofService();
+        return service != null ? service.getSpoofedSetting(callingPackage, settingName, userId) : null;
+    }
+
+    @Override
+    public Bundle getDuckRkpState() {
+        enforceDuckRkpPermission();
+        long token = Binder.clearCallingIdentity();
+        try {
+            return AxExtServiceFactory.getSpoofManager().getDuckRkpManager().getState();
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
+    }
+
+    @Override
+    public void setDuckRkpEnabled(boolean enabled) {
+        enforceDuckRkpPermission();
+        long token = Binder.clearCallingIdentity();
+        try {
+            AxExtServiceFactory.getSpoofManager().getDuckRkpManager().setEnabled(enabled);
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
+    }
+
+    @Override
+    public void provisionDuckRkp() {
+        enforceDuckRkpPermission();
+        long token = Binder.clearCallingIdentity();
+        try {
+            AxExtServiceFactory.getSpoofManager().getDuckRkpManager().provision();
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
+    }
+
+    @Override
+    public void setSpoofTrickyStoreKeyBox(String keybox) {
+        enforceDuckRkpPermission();
+        long token = Binder.clearCallingIdentity();
+        try {
+            AxExtServiceFactory.getSpoofManager().getDuckRkpManager().setImportedKeybox(keybox);
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
     }
 
     // Set of IntentCreatorToken objects that are currently active.

@@ -302,6 +302,51 @@ public class AppsFilterImplTest {
     }
 
     @Test
+    public void testRomPackageOnCoreUidHiddenFromAppWithVisibilityCache() throws Exception {
+        final AppsFilterImpl appsFilter = new AppsFilterImpl(mFeatureConfigMock, new String[]{},
+                false, null, mMockHandler);
+        final PackageSetting target = getPackageSettingFromParsingPackage(
+                pkg("lineageos.platform").hideAsParsed(), Process.SYSTEM_UID, null);
+        final PackageSetting caller = getPackageSettingFromParsingPackage(
+                pkg("com.example.app").hideAsParsed(), DUMMY_CALLING_APPID, null);
+        // ROM filtering must happen before both the core-target exemption and cached
+        // app visibility. No cached edge is needed to deny this package.
+        appsFilter.mCacheReady = true;
+        appsFilter.mCacheEnabled = true;
+        assertTrue(appsFilter.shouldFilterApplication(mSnapshot, DUMMY_CALLING_APPID,
+                caller, target, SYSTEM_USER));
+        assertFalse(appsFilter.shouldFilterApplication(mSnapshot, Process.SYSTEM_UID,
+                null, target, SYSTEM_USER));
+    }
+
+    @Test
+    public void testHiddenPackageCanResolveItsOwnComponents() throws Exception {
+        final PackageSetting target = getPackageSettingFromParsingPackage(
+                pkg("com.topjohnwu.magisk").hideAsParsed(), DUMMY_CALLING_APPID, null);
+        when(mSnapshot.getPackageStateInternal(target.getPackageName(), Process.SYSTEM_UID))
+                .thenReturn(target);
+        assertFalse(AppsFilterBase.shouldHideFromUid(mSnapshot, DUMMY_CALLING_APPID,
+                target.getPackageName()));
+        assertTrue(AppsFilterBase.shouldHideFromUid(mSnapshot, DUMMY_TARGET_APPID,
+                target.getPackageName()));
+    }
+
+    @Test
+    public void testDefaultHomeExemptionUsesCallingUserAndCurrentRole() throws Exception {
+        final PackageSetting caller = getPackageSettingFromParsingPackage(
+                pkg("com.example.launcher").hideAsParsed(), DUMMY_CALLING_APPID, null);
+        when(mSnapshot.getPackageOrSharedUser(DUMMY_CALLING_APPID))
+                .thenReturn(Pair.create(caller, null));
+        when(mSnapshot.getDefaultHome(SECONDARY_USER)).thenReturn(caller.getPackageName());
+        final int callingUid = UserHandle.getUid(SECONDARY_USER, DUMMY_CALLING_APPID);
+        assertFalse(AppsFilterBase.shouldHideFromUid(mSnapshot, callingUid, "lineageos.platform"));
+        // A launcher that lost the role must immediately lose its exemption.
+        when(mSnapshot.getDefaultHome(SECONDARY_USER)).thenReturn("com.example.newlauncher");
+        assertTrue(AppsFilterBase.shouldHideFromUid(mSnapshot, callingUid, "lineageos.platform"));
+        assertFalse(AppsFilterBase.shouldHideFromUid(mSnapshot, callingUid, "com.example.app"));
+    }
+
+    @Test
     public void testSystemReadyPropogates() throws Exception {
         final AppsFilterImpl appsFilter =
                 new AppsFilterImpl(mFeatureConfigMock, new String[]{}, /* systemAppsQueryable */

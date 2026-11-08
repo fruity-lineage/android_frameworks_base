@@ -1066,4 +1066,21 @@ interface IActivityManager {
      * Unregisters the listener previously registered for ANR warning.
      */
     void unregisterAnrWarningListener(in IAnrWarningCallback callback);
+
+    String getSpoofPifConfig();
+    boolean isSandboxSpoofSettingEnabled(String packageName, String settingKey, int userId);
+    void setSandboxSpoofSettingEnabled(String packageName, String settingKey, boolean enabled, int userId);
+    List<String> getSandboxEnabledSpoofSettings(String packageName, int userId);
+    void resetSandboxSpoofSettings(int userId);
+    String getSandboxSpoofedSetting(String callingPackage, String settingName, int userId);
+    String getSpoofGamePropsConfig();
+    String getSpoofTrickyStoreTarget();
+    String getSpoofTrickyStoreKeyBox();
+    String getSpoofTrickyStorePatch();
+    Bundle getSpoofBootState();
+
+    Bundle getDuckRkpState();
+    void setDuckRkpEnabled(boolean enabled);
+    void provisionDuckRkp();
+    void setSpoofTrickyStoreKeyBox(String keybox);
 }

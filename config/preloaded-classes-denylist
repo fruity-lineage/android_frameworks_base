@@ -10,3 +10,12 @@ com.android.internal.jank.InteractionJankMonitor$InstanceHolder
 com.android.internal.util.LatencyTracker$SLatencyTrackerHolder
 gov.nist.core.net.DefaultNetworkLayer
 java.util.concurrent.ThreadLocalRandom
+android.security.gameprops.GamePropsSpoofService
+android.security.pif.PlayIntegritySpoofService
+android.security.trickystore.AttestationUtils
+android.security.trickystore.CertificateGenerator
+android.security.trickystore.CertificateHacker
+android.security.trickystore.KeyBoxManager
+android.security.trickystore.TrickyStoreService
+com.android.internal.util.evolution.PixelDeviceRepository
+com.android.internal.util.evolution.PixelPropsUtils

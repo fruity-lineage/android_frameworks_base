@@ -1008,6 +1008,8 @@ public final class SystemServer implements Dumpable {
 
             LocalServices.addService(SystemServiceManager.class, mSystemServiceManager);
 
+            AxExtServiceFactory.init(mSystemContext);
+
             // Lazily load the pre-installed system font map in SystemServer only if we're not doing
             // the optimized font loading in the FontManagerService.
             if (!com.android.text.flags.Flags.useOptimizedBoottimeFontLoading()
@@ -1437,6 +1439,14 @@ public final class SystemServer implements Dumpable {
         // Manages Overlay packages
         t.traceBegin("StartOverlayManagerService");
         mSystemServiceManager.startService(new OverlayManagerService(mSystemContext));
+        t.traceEnd();
+
+        t.traceBegin("InitVBMetaDigest");
+        try {
+            android.security.trickystore.AttestationUtils.initBootHash();
+        } catch (Exception e) {
+            Slog.e(TAG, "Failed to initialize VBMeta digest", e);
+        }
         t.traceEnd();
 
         // Manages Resources packages

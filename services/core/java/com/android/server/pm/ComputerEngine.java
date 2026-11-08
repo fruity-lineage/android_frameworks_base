@@ -88,6 +88,7 @@ import android.content.pm.InstrumentationInfo;
 import android.content.pm.KeySet;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageInfoList;
+import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManagerInternal;
 import android.content.pm.ParceledListSlice;
@@ -121,6 +122,7 @@ import android.util.Log;
 import android.util.LogPrinter;
 import android.util.LongSparseLongArray;
 import android.util.MathUtils;
+import android.security.pif.PlayIntegritySpoofService;
 import android.util.Pair;
 import android.util.PrintWriterPrinter;
 import android.util.Slog;
@@ -429,6 +431,10 @@ public class ComputerEngine implements Computer {
     private final PackageManagerInternal.ExternalSourcesPolicy mExternalSourcesPolicy;
     private final CrossProfileIntentResolverEngine mCrossProfileIntentResolverEngine;
 
+    private static final String AURORA_SERVICES = "com.aurora.services";
+    private static final String AURORA_STORE = "com.aurora.store";
+    private static final String PLAY_STORE = "com.android.vending";
+
     // PackageManagerService attributes that are primitives are referenced through the
     // pms object directly.  Primitives are the only attributes so referenced.
     protected final PackageManagerService mService;
@@ -586,7 +592,11 @@ public class ComputerEngine implements Computer {
                                 && shouldFilterApplication(
                                 getPackageStateInternal(ai.applicationInfo.packageName,
                                         Process.SYSTEM_UID), filterCallingUid, userId);
-                if (!blockInstantResolution && !blockNormalResolution) {
+                final boolean blockHiddenRomResolution = !isCallerInstantApp
+                        && AppsFilterBase.shouldHideFromUid(
+                                this, filterCallingUid, comp.getPackageName());
+                if (!blockInstantResolution && !blockNormalResolution
+                        && !blockHiddenRomResolution) {
                     final ResolveInfo ri = new ResolveInfo();
                     ri.activityInfo = ai;
                     ri.userHandle = UserHandle.of(userId);
@@ -802,8 +812,10 @@ public class ComputerEngine implements Computer {
             final PackageStateInternal setting =
                     getPackageStateInternal(pkgName, Process.SYSTEM_UID);
 
-            if (setting != null && setting.getAndroidPackage() != null && (resolveForStart
-                    || !shouldFilterApplication(setting, filterCallingUid, userId))) {
+            if (setting != null && setting.getAndroidPackage() != null
+                    && !AppsFilterBase.shouldHideFromUid(this, filterCallingUid, pkgName)
+                    && (resolveForStart
+                            || !shouldFilterApplication(setting, filterCallingUid, userId))) {
                 final List<ResolveInfo> queryResult = mComponentResolver.queryActivities(this,
                         intent, resolvedType, flags, setting.getAndroidPackage().getActivities(),
                         userId);
@@ -1057,6 +1069,12 @@ public class ComputerEngine implements Computer {
         return null;
     }
 
+    @Nullable
+    @Override
+    public final String getDefaultHome(@UserIdInt int userId) {
+        return mDefaultAppProvider.getDefaultHome(userId);
+    }
+
     /**
      * Report the 'Home' activity which is currently set as "always use this one". If non is set
      * then reports the most likely home activity or null if there are more than one.
@@ -1219,6 +1237,11 @@ public class ComputerEngine implements Computer {
         final boolean blockInstant = intent.isWebIntent() && areWebInstantAppsDisabled(userId);
         for (int i = resolveInfos.size() - 1; i >= 0; i--) {
             final ResolveInfo info = resolveInfos.get(i);
+            if (info.activityInfo != null && AppsFilterBase.shouldHideFromUid(
+                    this, filterCallingUid, info.activityInfo.packageName)) {
+                resolveInfos.remove(i);
+                continue;
+            }
             // remove locally resolved instant app web results when disabled
             if (info.isInstantAppAvailable && blockInstant) {
                 resolveInfos.remove(i);
@@ -1565,6 +1588,29 @@ public class ComputerEngine implements Computer {
                 }
             });
 
+            // GMS may request the platform certificate for DroidGuard. Build both
+            // representations before publishing either one, preserving stock metadata
+            // for all other callers and preserving LineageOS's microG handling above.
+            if ("android".equals(packageInfo.packageName)
+                    && ArrayUtils.contains(getPackagesForUid(callingUid), "com.google.android.gms")) {
+                PlayIntegritySpoofService pif = PlayIntegritySpoofService.getInstance();
+                if (pif.isSpoofSignatureEnabled()) {
+                    try {
+                        Signature[] signatures = {new Signature(pif.getRomSignatureBytes())};
+                        SigningInfo signingInfo = new SigningInfo(new SigningDetails(signatures,
+                                SigningDetails.SignatureSchemeVersion.SIGNING_BLOCK_V3,
+                                SigningDetails.toSigningKeys(signatures), null));
+                        if ((flags & PackageManager.GET_SIGNATURES) != 0) {
+                            packageInfo.signatures = signatures;
+                        }
+                        if ((flags & PackageManager.GET_SIGNING_CERTIFICATES) != 0) {
+                            packageInfo.signingInfo = signingInfo;
+                        }
+                    } catch (IllegalArgumentException | CertificateException e) {
+                        Slog.e(TAG, "Unable to apply PIF platform signature", e);
+                    }
+                }
+            }
             return packageInfo;
         } else if ((flags & (MATCH_UNINSTALLED_PACKAGES | MATCH_ARCHIVED_PACKAGES)) != 0
                 && PackageUserStateUtils.isAvailable(state, flags)) {
@@ -5173,7 +5219,23 @@ public class ComputerEngine implements Computer {
             return null;
         }
 
-        return ps.getInstallSource();
+        final InstallSource installSource = ps.getInstallSource();
+        final PackageStateInternal playStore = mSettings.getPackage(PLAY_STORE);
+        if (installSource != null && playStore != null
+                && playStore.getUserStateOrDefault(userId).isInstalled()
+                && callingUid != Process.SYSTEM_UID
+                && (AURORA_STORE.equals(installSource.mInstallerPackageName)
+                        || AURORA_SERVICES.equals(installSource.mInstallerPackageName))) {
+            return InstallSource.create(PLAY_STORE, PLAY_STORE, PLAY_STORE,
+                    installSource.mInstallerPackageUid,
+                    installSource.mOriginalInstallerUid,
+                    installSource.mUpdateOwnerPackageName,
+                    installSource.mInstallerAttributionTag,
+                    PackageInstaller.PACKAGE_SOURCE_STORE)
+                    .setInitiatingPackageSignatures(
+                            new PackageSignatures(playStore.getSigningDetails()));
+        }
+        return installSource;
     }
 
     @Override
@@ -5217,6 +5279,10 @@ public class ComputerEngine implements Computer {
                     || (!isCallerSystemOrUpdateOwner && isCallerFromManagedUserOrProfile(userId))) {
                 updateOwnerPackageName = null;
             }
+        }
+
+        if (AURORA_STORE.equals(installerPackageName)) {
+            installerPackageName = PLAY_STORE;
         }
 
         if (installSource.mIsInitiatingPackageUninstalled) {
@@ -5704,8 +5770,10 @@ public class ComputerEngine implements Computer {
     @Override
     public String[] getSharedUserPackagesForPackage(@NonNull String packageName,
             @UserIdInt int userId) {
+        final int callingUid = Binder.getCallingUid();
         final PackageStateInternal packageSetting = mSettings.getPackage(packageName);
-        if (packageSetting == null || mSettings.getSharedUserFromPackageName(packageName) == null) {
+        if (packageSetting == null || mSettings.getSharedUserFromPackageName(packageName) == null
+                || shouldFilterApplicationIncludingUninstalled(packageSetting, callingUid, userId)) {
             return EmptyArray.STRING;
         }
 
@@ -5716,7 +5784,8 @@ public class ComputerEngine implements Computer {
         int i = 0;
         for (int index = 0; index < numPackages; index++) {
             final PackageStateInternal ps = packages.valueAt(index);
-            if (ps.getUserStateOrDefault(userId).isInstalled()) {
+            if (ps.getUserStateOrDefault(userId).isInstalled()
+                    && !shouldFilterApplication(ps, callingUid, userId)) {
                 res[i++] = ps.getPackageName();
             }
         }

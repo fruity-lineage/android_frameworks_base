@@ -8593,6 +8593,56 @@ public final class Settings {
         @Readable
         public static final String USER_SETUP_COMPLETE = "user_setup_complete";
 
+        /** @hide */
+        public static final String SPOOF_PIF_CONFIG = "spoof_pif_config";
+
+        /** @hide */
+        public static final String SPOOF_GAMEPROPS_CONFIG = "spoof_gameprops_config";
+
+        /** @hide */
+        public static final String SPOOF_TRICKYSTORE_TARGET = "spoof_trickystore_target";
+
+        /** @hide */
+        public static final String SPOOF_TRICKYSTORE_KEYBOX = "spoof_trickystore_keybox";
+
+        /** @hide */
+        public static final String SPOOF_DUCK_RKP_ENABLED = "spoof_duck_rkp_enabled";
+
+        /** @hide */
+        public static final String SPOOF_TRICKYSTORE_PATCH = "spoof_trickystore_patch";
+
+        /** @hide */
+        @Readable
+        public static final String PI_PP_SPOOF = "pi_pp_spoof";
+
+        /** @hide */
+        @Readable
+        public static final String PI_TENSOR_SPOOF = "pi_tensor_spoof";
+
+        /** @hide */
+        @Readable
+        public static final String PI_PHOTOS_SPOOF = "pi_photos_spoof";
+
+        /** @hide */
+        @Readable
+        public static final String PI_SNAPCHAT_SPOOF = "pi_snapchat_spoof";
+
+        /** @hide */
+        @Readable
+        public static final String CUSTOM_SPOOF_PROFILES = "custom_spoof_profiles";
+
+        /** @hide */
+        @Readable
+        public static final String PER_APPS_DEVICE_SPOOF = "per_apps_device_spoof";
+
+        /** @hide */
+        @Readable
+        public static final String PER_APPS_DEVICE_SPOOF_ENABLED = "per_apps_device_spoof_enabled";
+
+        /** @hide */
+        @Readable
+        public static final String PER_APPS_DEVICE_SPOOF_CACHE = "per_apps_device_spoof_cache";
+
         /**
          * Indicates that the user has not started setup personalization.
          * One of the possible states for {@link #USER_SETUP_PERSONALIZATION_STATE}.
