@@ -4,8 +4,11 @@ package com.android.server.security.rkp;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
+import android.hardware.security.keymint.ErrorCode;
 import android.hardware.security.keymint.SecurityLevel;
+import android.security.KeyStoreException;
 import android.system.keystore2.KeyMetadata;
+import android.system.keystore2.ResponseCode;
 
 import com.android.internal.org.bouncycastle.asn1.x500.X500Name;
 import com.android.internal.org.bouncycastle.asn1.x509.BasicConstraints;
@@ -30,6 +33,79 @@ import java.util.Date;
 import java.util.List;
 
 public class DuckRkpTrustyTest {
+    @Test
+    public void importConnectivityFailureWaitsForNetwork() {
+        KeyStoreException error = new KeyStoreException(
+                ResponseCode.OUT_OF_KEYS_PENDING_INTERNET_CONNECTIVITY, "test");
+        assertThat(error.getRetryPolicy())
+                .isEqualTo(KeyStoreException.RETRY_WHEN_CONNECTIVITY_AVAILABLE);
+        DuckRkpV1.Failure failure = DuckRkpTrusty.importFailure(error);
+        assertThat(failure.code).isEqualTo("network_error");
+        assertThat(failure.detail).isEqualTo(error.getErrorCode());
+        assertThat(DuckRkpManager.isRetryable(failure.code, failure.detail)).isTrue();
+    }
+
+    @Test
+    public void importPoolAndBackendBusyFailuresBackOff() {
+        for (int code : new int[] {ResponseCode.OUT_OF_KEYS_TRANSIENT_ERROR,
+                ResponseCode.BACKEND_BUSY}) {
+            DuckRkpV1.Failure failure = DuckRkpTrusty.importFailure(
+                    new KeyStoreException(code, "test"));
+            assertThat(failure.code).isEqualTo("hal_unavailable");
+            assertThat(failure.detail).isEqualTo(code);
+            assertThat(DuckRkpManager.isRetryable(failure.code, failure.detail)).isTrue();
+        }
+    }
+
+    @Test
+    public void permanentAndUncertainImportFailuresNeedExplicitRetry() {
+        for (int code : new int[] {ResponseCode.OUT_OF_KEYS_PERMANENT_ERROR,
+                ResponseCode.OUT_OF_KEYS_REQUIRES_SYSTEM_UPGRADE, ResponseCode.OUT_OF_KEYS,
+                ResponseCode.PERMISSION_DENIED, ResponseCode.SYSTEM_ERROR,
+                ErrorCode.SECURE_HW_COMMUNICATION_FAILED}) {
+            DuckRkpV1.Failure failure = DuckRkpTrusty.importFailure(
+                    new KeyStoreException(code, "test"));
+            assertThat(failure.code).isEqualTo("hal_rejected");
+            assertThat(failure.detail).isEqualTo(code);
+            assertThat(DuckRkpManager.isRetryable(failure.code, failure.detail)).isFalse();
+        }
+    }
+
+    @Test
+    public void failedCleanupStopsRetryAndPreservesOriginalFailure() {
+        for (int code : new int[] {ResponseCode.OUT_OF_KEYS_PENDING_INTERNET_CONNECTIVITY,
+                ResponseCode.OUT_OF_KEYS_TRANSIENT_ERROR, ResponseCode.BACKEND_BUSY}) {
+            DuckRkpV1.Failure primary = DuckRkpTrusty.importFailure(
+                    new KeyStoreException(code, "test"));
+            DuckRkpV1.Failure cleanup = new DuckRkpV1.Failure(
+                    "save_failed", ResponseCode.SYSTEM_ERROR);
+            assertThat(DuckRkpTrusty.cleanupFailure(primary, cleanup)).isSameInstanceAs(cleanup);
+            assertThat(cleanup.getSuppressed()).asList().containsExactly(primary);
+            assertThat(DuckRkpManager.isRetryable(cleanup.code, cleanup.detail)).isFalse();
+        }
+    }
+
+    @Test
+    public void failedCleanupKeepsPermanentPrimaryFailure() {
+        for (int code : new int[] {ResponseCode.OUT_OF_KEYS_PERMANENT_ERROR,
+                ResponseCode.OUT_OF_KEYS_REQUIRES_SYSTEM_UPGRADE, ResponseCode.SYSTEM_ERROR,
+                ErrorCode.SECURE_HW_COMMUNICATION_FAILED}) {
+            DuckRkpV1.Failure primary = DuckRkpTrusty.importFailure(
+                    new KeyStoreException(code, "test"));
+            DuckRkpV1.Failure cleanup = new DuckRkpV1.Failure(
+                    "save_failed", ResponseCode.SYSTEM_ERROR);
+            assertThat(DuckRkpTrusty.cleanupFailure(primary, cleanup)).isSameInstanceAs(primary);
+            assertThat(primary.getSuppressed()).asList().containsExactly(cleanup);
+            assertThat(DuckRkpManager.isRetryable(primary.code, primary.detail)).isFalse();
+        }
+        DuckRkpV1.Failure cleanup = new DuckRkpV1.Failure(
+                "save_failed", ResponseCode.SYSTEM_ERROR);
+        assertThat(DuckRkpTrusty.cleanupFailure(null, cleanup)).isSameInstanceAs(cleanup);
+        Exception unknown = new IllegalStateException("test");
+        assertThat(DuckRkpTrusty.cleanupFailure(unknown, cleanup)).isSameInstanceAs(unknown);
+        assertThat(unknown.getSuppressed()).asList().containsExactly(cleanup);
+    }
+
     @Test
     public void chainRequiresHardwareMetadataAndBoundedCertificates() throws Exception {
         KeyMetadata metadata = new KeyMetadata();

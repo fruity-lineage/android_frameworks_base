@@ -94,7 +94,7 @@ final class DuckRkpTrusty {
                 throw new DuckRkpV1.Failure("certificate_invalid");
             }
         } catch (KeyStoreException e) {
-            failure = new DuckRkpV1.Failure("hal_rejected", e.getErrorCode());
+            failure = importFailure(e);
             throw failure;
         } catch (Exception e) {
             failure = e;
@@ -104,10 +104,32 @@ final class DuckRkpTrusty {
             try {
                 deleteTemporaryKey(keystore, descriptor);
             } catch (DuckRkpV1.Failure cleanup) {
-                if (failure == null) throw cleanup;
-                failure.addSuppressed(cleanup);
+                throw cleanupFailure(failure, cleanup);
             }
         }
+    }
+
+    static DuckRkpV1.Failure importFailure(KeyStoreException error) {
+        int code = error.getErrorCode();
+        // Retry documented pre-import failures; communication loss may hide completion.
+        String failure = switch (code) {
+            case ResponseCode.OUT_OF_KEYS_PENDING_INTERNET_CONNECTIVITY -> "network_error";
+            case ResponseCode.OUT_OF_KEYS_TRANSIENT_ERROR, ResponseCode.BACKEND_BUSY ->
+                    "hal_unavailable";
+            default -> "hal_rejected";
+        };
+        return new DuckRkpV1.Failure(failure, code);
+    }
+
+    static Exception cleanupFailure(Exception primary, DuckRkpV1.Failure cleanup) {
+        if (primary == null) return cleanup;
+        if (primary instanceof DuckRkpV1.Failure failure
+                && DuckRkpManager.isRetryable(failure.code, failure.detail)) {
+            cleanup.addSuppressed(primary);
+            return cleanup;
+        }
+        primary.addSuppressed(cleanup);
+        return primary;
     }
 
     private static void deleteTemporaryKey(KeyStore2 keystore, KeyDescriptor descriptor)
