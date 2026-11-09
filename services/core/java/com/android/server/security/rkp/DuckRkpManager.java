@@ -122,7 +122,16 @@ public final class DuckRkpManager {
                 mAutomaticPaused = saved.getBoolean("paused");
                 mFailure = saved.getString("error");
                 mDetail = saved.getInt("detail");
-                if (mAutomaticPaused && (mFailure.equals("hal_unsupported")
+                if (resumeLegacyTrustyState(saved, DuckRkpTrusty.enabled(),
+                        System.currentTimeMillis())) {
+                    mAutomaticPaused = false;
+                    mFailure = saved.getString("error");
+                    mNextAttempt = Math.min(saved.getLong("next_attempt"),
+                            System.currentTimeMillis() + MAX_RETRY_MS);
+                    saveAutomaticState();
+                }
+                if (mAutomaticPaused && !DuckRkpTrusty.enabled()
+                        && (mFailure.equals("hal_unsupported")
                         || mFailure.equals("hal_rejected")) && DuckRkpNative.available()) {
                     mAutomaticPaused = false;
                     mFailure = "";
@@ -461,6 +470,17 @@ public final class DuckRkpManager {
     static long renewalTime(long notBefore, long expiresAt) {
         long lifetime = Math.max(0, expiresAt - notBefore);
         return expiresAt - Math.min(TimeUnit.HOURS.toMillis(24), lifetime / 5);
+    }
+
+    static boolean resumeLegacyTrustyState(JSONObject saved, boolean trustyImport, long now)
+            throws JSONException {
+        if (!trustyImport || !saved.getBoolean("paused")
+                || !"hal_rejected".equals(saved.getString("error"))) return false;
+        DuckRkpV1.Failure failure = DuckRkpTrusty.importFailure(saved.getInt("detail"));
+        if (!isRetryable(failure.code, failure.detail)) return false;
+        saved.put("paused", false).put("error", failure.code).put("next_attempt",
+                Math.max(saved.getLong("next_attempt"), now + retryDelay(saved.getInt("failures"))));
+        return true;
     }
 
     static long retryDelay(int failures) {

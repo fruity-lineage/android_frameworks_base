@@ -52,6 +52,9 @@ final class DuckRkpTrusty {
     }
 
     static DuckRkpCertificates.Result provision(DuckRkpV1.Progress progress) throws Exception {
+        if (ServiceManager.checkService(SERVICE) == null) {
+            throw new DuckRkpV1.Failure("hal_unavailable");
+        }
         KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
         generator.initialize(new ECGenParameterSpec("secp256r1"));
         KeyPair key = generator.generateKeyPair();
@@ -110,7 +113,10 @@ final class DuckRkpTrusty {
     }
 
     static DuckRkpV1.Failure importFailure(KeyStoreException error) {
-        int code = error.getErrorCode();
+        return importFailure(error.getErrorCode());
+    }
+
+    static DuckRkpV1.Failure importFailure(int code) {
         // Retry documented pre-import failures; communication loss may hide completion.
         String failure = switch (code) {
             case ResponseCode.OUT_OF_KEYS_PENDING_INTERNET_CONNECTIVITY -> "network_error";
