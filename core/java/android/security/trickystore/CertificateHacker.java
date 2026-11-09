@@ -3,6 +3,7 @@ package android.security.trickystore;
 import android.security.pif.PlayIntegritySpoofService;
 import android.util.Log;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.org.bouncycastle.asn1.ASN1Boolean;
 import com.android.internal.org.bouncycastle.asn1.ASN1Encodable;
 import com.android.internal.org.bouncycastle.asn1.ASN1EncodableVector;
@@ -344,9 +345,17 @@ public final class CertificateHacker {
      * their real, untouched hardware identity in the attestation cert.
      */
     private static Map<Integer, byte[]> getAttestationIdOverrides() {
+        try {
+            return getAttestationIdOverrides(PlayIntegritySpoofService.getInstance());
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to read PIF build fields for attestation IDs", e);
+            return java.util.Collections.emptyMap();
+        }
+    }
+
+    private static Map<Integer, byte[]> getAttestationIdOverrides(PlayIntegritySpoofService pif) {
         Map<Integer, byte[]> overrides = new java.util.HashMap<>();
         try {
-            PlayIntegritySpoofService pif = PlayIntegritySpoofService.getInstance();
             if (!pif.isSpoofBuildEnabled()) {
                 return overrides;
             }
@@ -362,6 +371,30 @@ public final class CertificateHacker {
             Log.w(TAG, "Failed to read PIF build fields for attestation IDs", e);
         }
         return overrides;
+    }
+
+    @VisibleForTesting
+    static void applyAttestationIdOverrides(CertificateGenerator.KeyGenParameters params,
+            PlayIntegritySpoofService pif, String processName) {
+        if (!pif.shouldSpoof(processName)) return;
+        Map<Integer, byte[]> overrides = getAttestationIdOverrides(pif);
+        // Null means the caller did not request that identity tag.
+        if (params.brand != null) {
+            params.brand = overrides.getOrDefault(TAG_ATTESTATION_ID_BRAND, params.brand);
+        }
+        if (params.device != null) {
+            params.device = overrides.getOrDefault(TAG_ATTESTATION_ID_DEVICE, params.device);
+        }
+        if (params.product != null) {
+            params.product = overrides.getOrDefault(TAG_ATTESTATION_ID_PRODUCT, params.product);
+        }
+        if (params.manufacturer != null) {
+            params.manufacturer = overrides.getOrDefault(
+                    TAG_ATTESTATION_ID_MANUFACTURER, params.manufacturer);
+        }
+        if (params.model != null) {
+            params.model = overrides.getOrDefault(TAG_ATTESTATION_ID_MODEL, params.model);
+        }
     }
 
     private static void putIfPresent(Map<Integer, byte[]> map, int tag, String value) {

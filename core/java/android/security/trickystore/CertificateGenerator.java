@@ -6,6 +6,7 @@ import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.Signature;
 import android.os.Process;
+import android.security.pif.PlayIntegritySpoofService;
 import android.util.Log;
 
 import com.android.internal.org.bouncycastle.asn1.ASN1Boolean;
@@ -158,6 +159,8 @@ public final class CertificateGenerator {
         try {
             X500Name issuer = keybox.getIssuerSubject();
 
+            CertificateHacker.applyAttestationIdOverrides(params,
+                    PlayIntegritySpoofService.getInstance(), ActivityThread.currentProcessName());
             X509Certificate leaf = buildCertificate(keyPair, keybox, params, issuer, securityLevel, uid);
 
             List<Certificate> chain = new ArrayList<>();
