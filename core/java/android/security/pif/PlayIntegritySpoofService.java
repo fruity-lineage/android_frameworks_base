@@ -17,6 +17,7 @@ import android.util.Base64;
 import android.util.JsonReader;
 import android.util.Log;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.evolution.PixelDeviceRepository;
 
 import java.io.IOException;
@@ -143,8 +144,7 @@ public final class PlayIntegritySpoofService {
 
     public synchronized void loadConfig() {
         mLastLoadAttempt = SystemClock.uptimeMillis();
-        mBuildFields.clear();
-        mConfigLoaded = false;
+        resetConfig();
 
         IActivityManager am = ActivityManager.getService();
         if (am == null) {
@@ -166,7 +166,27 @@ public final class PlayIntegritySpoofService {
             return;
         }
 
-        if (content == null || content.isEmpty()) {
+        loadConfig(content);
+    }
+
+    private void resetConfig() {
+        mBuildFields.clear();
+        mConfigLoaded = false;
+        mVerboseLogs = 0;
+        mSpoofBuild = true;
+        mSpoofProvider = false;
+        mSpoofSignature = false;
+        mSpoofVendingFinger = "0";
+        mSpoofVendingSdk = 0;
+        mDebug = false;
+        sBlockCertificateChain = false;
+    }
+
+    @VisibleForTesting
+    synchronized void loadConfig(String content) {
+        mLastLoadAttempt = SystemClock.uptimeMillis();
+        resetConfig();
+        if (content == null || content.trim().isEmpty()) {
             if (!mLoadFailureLogged) {
                 mLoadFailureLogged = true;
                 Log.w(TAG, "No PIF config in Settings.Secure");
@@ -189,6 +209,7 @@ public final class PlayIntegritySpoofService {
             mConfigLoaded = true;
             Log.i(TAG, "PIF config loaded, fields=" + mBuildFields.size());
         } catch (Throwable e) {
+            resetConfig();
             Log.e(TAG, "Failed to load PIF config", e);
         }
     }
@@ -266,7 +287,7 @@ public final class PlayIntegritySpoofService {
         }
     }
 
-    private void parseJson(String content) {
+    private void parseJson(String content) throws IOException {
         try (JsonReader reader = new JsonReader(new StringReader(content))) {
             reader.beginObject();
             while (reader.hasNext()) {
@@ -289,8 +310,6 @@ public final class PlayIntegritySpoofService {
                 processKeyValue(key, value);
             }
             reader.endObject();
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to parse JSON config", e);
         }
     }
 

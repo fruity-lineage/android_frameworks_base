@@ -37,6 +37,7 @@ import android.security.trickystore.TrickyStoreService;
 import android.util.Base64;
 import android.util.Log;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.evolution.PixelDeviceRepository;
 import com.android.server.NtServiceInjector;
 import com.android.server.security.rkp.DuckRkpManager;
@@ -84,6 +85,7 @@ public class AxSpoofManager implements IAxSpoofManager {
     // rest of a multi-key reset a moment to land, then refresh straight away
     // rather than leaving the device without a fingerprint until the next tick.
     private static final long REFRESH_AFTER_CLEAR_DELAY_MS = TimeUnit.SECONDS.toMillis(5);
+    private static final long GMS_RESTART_DELAY_MS = 500;
     // Spoofing stays off until the user opens Settings for the first time after
     // setup. The flag is persisted, so later boots start spoofing straight away;
     // a clean flash wipes /data and the flag with it.
@@ -154,9 +156,9 @@ public class AxSpoofManager implements IAxSpoofManager {
     private volatile boolean mActivated;
     private TaskStackListener mTaskListener;
     private final Runnable mRefreshAfterClear = this::refreshNow;
+    private final Runnable mRestartGms = this::killGmsFamily;
 
     private final Map<String, String> mCache = new ConcurrentHashMap<>();
-    private final HandlerThread mHandlerThread;
     private final Handler mHandler;
 
     private Context mContext;
@@ -166,9 +168,16 @@ public class AxSpoofManager implements IAxSpoofManager {
     private volatile DuckRkpManager mDuckRkp;
 
     public AxSpoofManager() {
-        mHandlerThread = new HandlerThread("AxSpoofManager");
-        mHandlerThread.start();
-        mHandler = new Handler(mHandlerThread.getLooper());
+        HandlerThread handlerThread = new HandlerThread("AxSpoofManager");
+        handlerThread.start();
+        mHandler = new Handler(handlerThread.getLooper());
+    }
+
+    @VisibleForTesting
+    AxSpoofManager(Context context, Handler handler) {
+        mContext = context;
+        mResolver = context.getContentResolver();
+        mHandler = handler;
     }
 
     @Override
@@ -191,6 +200,10 @@ public class AxSpoofManager implements IAxSpoofManager {
                 if (uri == null) return;
                 final String last = uri.getLastPathSegment();
                 if (last == null) return;
+                if (PIF_ENABLED_KEY.equals(last)) {
+                    onPifConfigChanged();
+                    return;
+                }
                 if (TRICKYSTORE_ENABLED_KEY.equals(last)) {
                     mDuckRkp.onSettingsChanged(true);
                     return;
@@ -212,12 +225,14 @@ public class AxSpoofManager implements IAxSpoofManager {
         }
         mResolver.registerContentObserver(Settings.System.getUriFor(TRICKYSTORE_ENABLED_KEY),
                 false, mObserver, UserHandle.USER_SYSTEM);
+        mResolver.registerContentObserver(Settings.System.getUriFor(PIF_ENABLED_KEY),
+                false, mObserver, UserHandle.USER_SYSTEM);
 
         mActivated = Settings.Secure.getIntForUser(
                 mResolver, ACTIVATED_KEY, 0, UserHandle.USER_SYSTEM) != 0;
+        stagePifPropOverrides(getCached(Settings.Secure.SPOOF_PIF_CONFIG));
         if (mActivated) {
             seedDefaultTargetsIfUnset();
-            stagePifPropOverrides(getCached(Settings.Secure.SPOOF_PIF_CONFIG));
         } else {
             Log.i(TAG, "Spoofing off until Settings is opened for the first time");
             registerSettingsWatcher();
@@ -305,7 +320,7 @@ public class AxSpoofManager implements IAxSpoofManager {
         seedDefaultTargetsIfUnset();
         stagePifPropOverrides(getCached(Settings.Secure.SPOOF_PIF_CONFIG));
         scheduleFirstRefresh();
-        killGmsFamily();
+        scheduleGmsRestart();
     }
 
     /** A device RKP keybox was generated or removed: reload the settings and restart GMS. */
@@ -316,7 +331,7 @@ public class AxSpoofManager implements IAxSpoofManager {
             }
             if (!mActivated) return;
             seedDefaultTargetsIfUnset();
-            killGmsFamily();
+            scheduleGmsRestart();
         });
     }
 
@@ -337,30 +352,34 @@ public class AxSpoofManager implements IAxSpoofManager {
     }
 
     /**
-     * Called after SPOOF_PIF_CONFIG changes. If the config was cleared (reset
-     * to defaults, or the user deleted it), drop the staged PIF props so
-     * bionic stops serving the old device identity for the overridden reads, and
-     * stop the GMS family so it stops running on the old fingerprint, then
-     * refresh shortly after so the device isn't left without a fingerprint until
-     * the next hourly tick. A non-empty config is staged as it stands, so a
-     * manual import or an Evolver edit reaches bionic the same way a refresh does.
+     * Reload the owner PIF config and enable switch together, then restart GMS
+     * after native property staging so Java and native readers use the same
+     * snapshot. Clearing a config also schedules the existing bootstrap refresh.
      */
     private void onPifConfigChanged() {
+        mHandler.removeCallbacks(mRefreshAfterClear);
+        if (!mActivated) return;
         // PackageManager consults PIF's system_server instance for platform signatures.
         // Its parsed flags must follow configuration edits, including clearing/reset.
-        if (mActivated) PlayIntegritySpoofService.getInstance().loadConfig();
+        PlayIntegritySpoofService.getInstance().loadConfig();
         final String config = getCached(Settings.Secure.SPOOF_PIF_CONFIG);
-        if (config != null && !config.trim().isEmpty()) {
-            if (mActivated) stagePifPropOverrides(config);
-            return;
+        stagePifPropOverrides(config);
+        scheduleGmsRestart();
+        if (isPifEnabled() && isEmpty(config)) {
+            Log.i(TAG, "PIF config cleared, dropped staged PIF props");
+            mHandler.postDelayed(mRefreshAfterClear, REFRESH_AFTER_CLEAR_DELAY_MS);
         }
+    }
 
-        clearPifPropOverrides();
-        killGmsFamily();
-        Log.i(TAG, "PIF config cleared, dropped staged PIF props");
-
-        mHandler.removeCallbacks(mRefreshAfterClear);
-        mHandler.postDelayed(mRefreshAfterClear, REFRESH_AFTER_CLEAR_DELAY_MS);
+    private boolean isPifEnabled() {
+        if (mResolver == null) return false;
+        final long token = Binder.clearCallingIdentity();
+        try {
+            return Settings.System.getIntForUser(
+                    mResolver, PIF_ENABLED_KEY, 1, UserHandle.USER_SYSTEM) != 0;
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
     }
 
     /**
@@ -617,9 +636,6 @@ public class AxSpoofManager implements IAxSpoofManager {
                 mResolver, LAST_AUTO_FETCH_KEY, System.currentTimeMillis(), UserHandle.USER_SYSTEM);
         updatePatchIfSimple(matched.securityPatch);
 
-        stagePifPropOverrides(toSave.toString(2));
-        killGmsFamily();
-
         Log.i(TAG, "Auto-refreshed Pixel fingerprint: " + matched.model);
     }
 
@@ -694,7 +710,7 @@ public class AxSpoofManager implements IAxSpoofManager {
             throw new IllegalStateException("Cannot save refreshed keybox");
         }
 
-        killGmsFamily();
+        scheduleGmsRestart();
         Log.i(TAG, "Auto-refreshed official keybox");
     }
 
@@ -746,6 +762,14 @@ public class AxSpoofManager implements IAxSpoofManager {
         }
     }
 
+    @VisibleForTesting
+    void scheduleGmsRestart() {
+        if (!mActivated) return;
+        // A config write, patch update and Duck notification can arrive together.
+        mHandler.removeCallbacks(mRestartGms);
+        mHandler.postDelayed(mRestartGms, GMS_RESTART_DELAY_MS);
+    }
+
     private void killGmsFamily() {
         // Never touch GMS/GSF before spoofing is activated (first Settings launch),
         // so Setup Wizard is never disturbed.
@@ -788,6 +812,10 @@ public class AxSpoofManager implements IAxSpoofManager {
      * itself, so this is where the switch has to be honored.
      */
     private void stagePifPropOverrides(String config) {
+        if (!mActivated || !isPifEnabled()) {
+            clearPifPropOverrides();
+            return;
+        }
         final Map<String, String> fields = parsePifConfig(config);
         if (!isSpoofPropsEnabled(fields)) {
             clearPifPropOverrides();
@@ -1001,7 +1029,7 @@ public class AxSpoofManager implements IAxSpoofManager {
 
     @Override
     public String getPifConfig() {
-        if (!mActivated) return null;
+        if (!mActivated || !isPifEnabled()) return null;
         return getCached(Settings.Secure.SPOOF_PIF_CONFIG);
     }
 
